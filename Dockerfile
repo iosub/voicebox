@@ -10,11 +10,13 @@ WORKDIR /build
 
 # Copy workspace config and frontend source
 COPY package.json bun.lock ./
+COPY CHANGELOG.md ./
 COPY app/ ./app/
 COPY web/ ./web/
 
 # Strip workspaces not needed for web build, and fix trailing comma
 RUN sed -i '/"tauri"/d; /"landing"/d' package.json && \
+    tr -d '\r' < package.json > package.json.tmp && mv package.json.tmp package.json && \
     sed -i -z 's/,\n  ]/\n  ]/' package.json
 RUN bun install --no-save
 # Build frontend (skip tsc — upstream has pre-existing type errors)
@@ -34,7 +36,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir --upgrade pip
 
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install \
+    --extra-index-url https://download.pytorch.org/whl/cu126 \
+    -r requirements.txt
 RUN pip install --no-cache-dir --prefix=/install --no-deps chatterbox-tts
 RUN pip install --no-cache-dir --prefix=/install --no-deps hume-tada
 RUN pip install --no-cache-dir --prefix=/install \

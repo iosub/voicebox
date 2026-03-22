@@ -20,8 +20,12 @@ services:
       # HuggingFace model cache (so models aren't re-downloaded on rebuild)
       - huggingface-cache:/home/voicebox/.cache/huggingface
 
+    runtime: nvidia
+
     environment:
       - LOG_LEVEL=info
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
     networks:
       - voicebox-net
@@ -31,6 +35,11 @@ services:
         limits:
           cpus: '4'
           memory: 8G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
 networks:
   voicebox-net:

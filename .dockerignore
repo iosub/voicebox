@@ -12,6 +12,8 @@ scripts/
 
 # Dependencies & build artifacts (rebuilt in Docker)
 node_modules/
+**/node_modules/
+**/.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -38,7 +40,6 @@ biome.json
 .bumpversion.cfg
 .npmrc
 Makefile
-CHANGELOG.md
 CONTRIBUTING.md
 SECURITY.md
 LICENSE
