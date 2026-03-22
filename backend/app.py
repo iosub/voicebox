@@ -35,6 +35,19 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+LOCAL_CORS_ORIGIN_REGEX = (
+    r"^(?:"
+    r"https?://(?:"
+    r"(?:localhost|127\.0\.0\.1)"
+    r"|10(?:\.\d{1,3}){3}"
+    r"|192\.168(?:\.\d{1,3}){2}"
+    r"|172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}"
+    r")(?::\d{1,5})?"
+    r"|https?://tauri\.localhost(?::\d{1,5})?"
+    r"|tauri://localhost"
+    r")$"
+)
+
 # AMD GPU environment variables must be set before torch import
 if not os.environ.get("HSA_OVERRIDE_GFX_VERSION"):
     os.environ["HSA_OVERRIDE_GFX_VERSION"] = "10.3.0"
@@ -99,6 +112,7 @@ def _configure_cors(application: FastAPI) -> None:
     application.add_middleware(
         CORSMiddleware,
         allow_origins=all_origins,
+        allow_origin_regex=LOCAL_CORS_ORIGIN_REGEX,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

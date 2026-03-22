@@ -20,6 +20,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.testclient import TestClient
 
 
+LOCAL_CORS_ORIGIN_REGEX = (
+    r"^(?:"
+    r"https?://(?:"
+    r"(?:localhost|127\.0\.0\.1)"
+    r"|10(?:\.\d{1,3}){3}"
+    r"|192\.168(?:\.\d{1,3}){2}"
+    r"|172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}"
+    r")(?::\d{1,5})?"
+    r"|https?://tauri\.localhost(?::\d{1,5})?"
+    r"|tauri://localhost"
+    r")$"
+)
+
+
 def _build_app(env_origins: str = "") -> FastAPI:
     """
     Build a minimal FastAPI app with the same CORS logic as backend/main.py.
@@ -42,6 +56,7 @@ def _build_app(env_origins: str = "") -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins,
+        allow_origin_regex=LOCAL_CORS_ORIGIN_REGEX,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -90,6 +105,9 @@ class TestCORSDefaultOrigins:
         "http://127.0.0.1:5173",
         "http://localhost:17493",
         "http://127.0.0.1:17493",
+        "http://192.168.80.1:17493",
+        "http://10.0.0.25:3000",
+        "http://172.20.10.5:8080",
         "tauri://localhost",
         "https://tauri.localhost",
     ])

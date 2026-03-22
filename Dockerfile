@@ -1,5 +1,5 @@
 # ============================================================
-# Voicebox — Local TTS Server with Web UI (CPU)
+# Voicebox — Local TTS Server with Web UI
 # 3-stage build: Frontend → Python deps → Runtime
 # ============================================================
 
@@ -8,23 +8,30 @@ FROM oven/bun:1 AS frontend
 
 WORKDIR /build
 
-# Copy workspace config and frontend source
+# Copy workspace manifests first so dependency install stays cached
 COPY package.json bun.lock ./
-COPY CHANGELOG.md ./
-COPY app/ ./app/
-COPY web/ ./web/
+COPY app/package.json ./app/package.json
+COPY web/package.json ./web/package.json
 
 # Strip workspaces not needed for web build, and fix trailing comma
 RUN sed -i '/"tauri"/d; /"landing"/d' package.json && \
     tr -d '\r' < package.json > package.json.tmp && mv package.json.tmp package.json && \
     sed -i -z 's/,\n  ]/\n  ]/' package.json
 RUN bun install --no-save
+
+# Copy frontend source after dependency install so source edits do not bust bun cache
+COPY CHANGELOG.md ./
+COPY app/ ./app/
+COPY web/ ./web/
+
 # Build frontend (skip tsc — upstream has pre-existing type errors)
 RUN cd web && bunx --bun vite build
 
 
 # === Stage 2: Build Python dependencies ===
 FROM python:3.11-slim AS backend-builder
+
+COPY --from=ghcr.io/astral-sh/uv:0.6.9 /uv /uvx /bin/
 
 WORKDIR /build
 
@@ -33,15 +40,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir --upgrade pip
+ENV UV_LINK_MODE=copy
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN python -m venv /opt/venv
 
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python /opt/venv/bin/python \
     --extra-index-url https://download.pytorch.org/whl/cu126 \
     -r requirements.txt
-RUN pip install --no-cache-dir --prefix=/install --no-deps chatterbox-tts
-RUN pip install --no-cache-dir --prefix=/install --no-deps hume-tada
-RUN pip install --no-cache-dir --prefix=/install \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python /opt/venv/bin/python --no-deps chatterbox-tts
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python /opt/venv/bin/python --no-deps hume-tada
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python /opt/venv/bin/python \
     git+https://github.com/QwenLM/Qwen3-TTS.git
 
 
@@ -54,14 +69,17 @@ RUN groupadd -r voicebox && \
 
 WORKDIR /app
 
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 # Install only runtime system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy installed Python packages from builder stage
-COPY --from=backend-builder /install /usr/local
+# Copy installed Python environment from builder stage
+COPY --from=backend-builder /opt/venv /opt/venv
 
 # Copy backend application code
 COPY --chown=voicebox:voicebox backend/ /app/backend/
