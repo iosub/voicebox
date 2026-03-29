@@ -58,6 +58,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /opt/venv/bin/python \
     git+https://github.com/QwenLM/Qwen3-TTS.git
+# Install misaki Japanese/Chinese extras separately to preserve pip cache layer
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python /opt/venv/bin/python "misaki[ja,zh]>=0.9.4"
 
 
 # === Stage 3: Runtime ===
