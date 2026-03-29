@@ -14,6 +14,9 @@ services:
       # Container side: /app/data/generations/
       - ./output:/app/data/generations
 
+      # Mount backend source for fast Python-only iteration without rebuilding
+      - ./backend:/app/backend
+
       # Named volume for profiles, DB, cache (persists across container restarts)
       - voicebox-data:/app/data
 

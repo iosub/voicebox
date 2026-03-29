@@ -6,6 +6,7 @@ from fastapi import FastAPI
 def register_routers(app: FastAPI) -> None:
     """Include all domain routers on the application."""
     from .health import router as health_router
+    from .openai_compat import router as openai_compat_router
     from .profiles import router as profiles_router
     from .channels import router as channels_router
     from .generations import router as generations_router
@@ -18,6 +19,7 @@ def register_routers(app: FastAPI) -> None:
     from .tasks import router as tasks_router
     from .cuda import router as cuda_router
 
+    app.include_router(openai_compat_router)
     app.include_router(health_router)
     app.include_router(profiles_router)
     app.include_router(channels_router)
