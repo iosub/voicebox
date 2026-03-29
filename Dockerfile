@@ -29,7 +29,9 @@ RUN cd web && bunx --bun vite build
 
 
 # === Stage 2: Build Python dependencies ===
-FROM python:3.11-slim AS backend-builder
+# Pin digest to prevent silent cache invalidation from upstream image updates.
+# To update: docker buildx imagetools inspect python:3.11-slim --format '{{json .Manifest}}'
+FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c981afb38946634 AS backend-builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.6.9 /uv /uvx /bin/
 
@@ -64,7 +66,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 
 # === Stage 3: Runtime ===
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c981afb38946634
 
 # Create non-root user for security
 RUN groupadd -r voicebox && \
