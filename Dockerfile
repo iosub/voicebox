@@ -66,7 +66,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 
 # === Stage 3: Runtime ===
-FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c981afb38946634
+FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c981afb38946634 AS python311
 
 # Create non-root user for security
 RUN groupadd -r voicebox && \
@@ -80,9 +80,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Install only runtime system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    sox \
     curl \
     && rm -rf /var/lib/apt/lists/*
-
+FROM python311 AS runtime 
 # Copy installed Python environment from builder stage
 COPY --from=backend-builder /opt/venv /opt/venv
 
