@@ -58,7 +58,10 @@ COPY backend/requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /opt/venv/bin/python \
     --extra-index-url https://download.pytorch.org/whl/cu126 \
-    -r requirements.txt
+    -r requirements.txt 
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python /opt/venv/bin/python \
+    "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.7cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /opt/venv/bin/python --no-deps chatterbox-tts
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -69,7 +72,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Install misaki Japanese/Chinese extras separately to preserve pip cache layer
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /opt/venv/bin/python "misaki[ja,zh]>=0.9.4"
-
+# RUN --mount=type=cache,target=/root/.cache/uv \
+#     uv pip install --python /opt/venv/bin/python "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.7cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
 
 # === Stage 4: Runtime base ===
 FROM python-base AS runtime-base
