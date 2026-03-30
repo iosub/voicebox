@@ -28,10 +28,22 @@ COPY web/ ./web/
 RUN cd web && bunx --bun vite build
 
 
-# === Stage 2: Build Python dependencies ===
+# === Stage 2: Shared Python base ===
 # Pin digest to prevent silent cache invalidation from upstream image updates.
 # To update: docker buildx imagetools inspect python:3.11-slim --format '{{json .Manifest}}'
-FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c981afb38946634 AS backend-builder
+FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c981afb38946634 AS python-base
+
+WORKDIR /app
+
+ENV UV_LINK_MODE=copy
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN python -m venv /opt/venv
+
+
+# === Stage 3: Build Python dependencies ===
+FROM python-base AS backend-builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.6.9 /uv /uvx /bin/
 
@@ -41,12 +53,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
-
-ENV UV_LINK_MODE=copy
-ENV VIRTUAL_ENV=/opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-RUN python -m venv /opt/venv
 
 COPY backend/requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -65,17 +71,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /opt/venv/bin/python "misaki[ja,zh]>=0.9.4"
 
 
-# === Stage 3: Runtime ===
-FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c981afb38946634 AS python311
+# === Stage 4: Runtime base ===
+FROM python-base AS runtime-base
 
 # Create non-root user for security
 RUN groupadd -r voicebox && \
     useradd -r -g voicebox -m -s /bin/bash voicebox
-
-WORKDIR /app
-
-ENV VIRTUAL_ENV=/opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
 
 # Install only runtime system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -83,7 +84,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sox \
     curl \
     && rm -rf /var/lib/apt/lists/*
-FROM python311 AS runtime 
+
+
+# === Stage 5: Runtime ===
+FROM runtime-base AS runtime
+
+
 # Copy installed Python environment from builder stage
 COPY --from=backend-builder /opt/venv /opt/venv
 
