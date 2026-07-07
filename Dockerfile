@@ -20,9 +20,11 @@ COPY package.json bun.lock CHANGELOG.md ./
 COPY app/ ./app/
 COPY web/ ./web/
 
-# Strip workspaces not needed for web build, and fix trailing comma
+# Strip workspaces not needed for web build, and fix trailing comma.
+# busybox sed -z does not interpret \n in patterns, so use node to drop
+# the trailing comma left after removing "tauri"/"landing" entries.
 RUN sed -i '/"tauri"/d; /"landing"/d' package.json && \
-    sed -i -z 's/,\n  ]/\n  ]/' package.json
+    node -e "const fs=require('fs');let s=fs.readFileSync('package.json','utf8');s=s.replace(/,(\s*\n\s*\])/,'\$1');fs.writeFileSync('package.json',s)"
 RUN bun install --no-save
 # Build frontend (skip tsc — upstream has pre-existing type errors)
 RUN cd web && bunx --bun vite build
@@ -99,6 +101,7 @@ WORKDIR /app
 # gosu drops root in the entrypoint (ROCm GPU group joining)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    sox \
     curl \
     gcc \
     libc6-dev \
@@ -117,6 +120,10 @@ FROM runtime-base AS runtime
 COPY --from=backend-builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Entrypoint joins GPU groups then drops to the voicebox user
+# Copied before backend/ so that backend code changes don't invalidate this layer.
+COPY --chmod=755 scripts/rocm-entrypoint.sh /usr/local/bin/entrypoint.sh
+
 # Copy backend application code
 COPY --chown=voicebox:voicebox backend/ /app/backend/
 
@@ -134,7 +141,5 @@ EXPOSE 17493
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=60s \
     CMD curl -f http://localhost:17493/health || exit 1
 
-# Entrypoint joins GPU groups then drops to the voicebox user
-COPY --chmod=755 scripts/rocm-entrypoint.sh /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "17493"]

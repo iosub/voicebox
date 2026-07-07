@@ -21,6 +21,7 @@ from .base import (
 )
 from ..utils.cache import get_cache_key, get_cached_voice_prompt, cache_voice_prompt
 from ..utils.audio import load_audio
+from ..utils.hf_offline_patch import force_offline_if_cached
 
 
 class PyTorchTTSBackend:
