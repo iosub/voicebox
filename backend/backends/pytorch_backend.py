@@ -21,7 +21,6 @@ from .base import (
 )
 from ..utils.cache import get_cache_key, get_cached_voice_prompt, cache_voice_prompt
 from ..utils.audio import load_audio
-from ..utils.hf_offline_patch import force_offline_if_cached
 
 
 class PyTorchTTSBackend:
@@ -99,6 +98,41 @@ class PyTorchTTSBackend:
             model_path = self._get_model_path(model_size)
             logger.info("Loading TTS model %s on %s...", model_size, self.device)
 
+            import os
+            quantize_bits = int(os.environ.get("QUANTIZE_BITS", "16"))
+            bnb_config = None
+
+            if quantize_bits in (4, 8) and self.device != "cpu":
+                try:
+                    import bitsandbytes  # noqa: F401 – verify native lib loads
+                    from transformers import BitsAndBytesConfig
+
+                    # Qwen3TTS can't be deepcopy'd (dict_keys attr) which
+                    # breaks transformers' tied-weight detection.  Patch it
+                    # so the failure is non-fatal.
+                    import transformers.integrations.bitsandbytes as _bnb_int
+                    _orig_get_keys = _bnb_int.get_keys_to_not_convert
+
+                    def _safe_get_keys(model):
+                        try:
+                            return _orig_get_keys(model)
+                        except TypeError:
+                            return ["lm_head"]
+
+                    _bnb_int.get_keys_to_not_convert = _safe_get_keys
+
+                    if quantize_bits == 4:
+                        bnb_config = BitsAndBytesConfig(
+                            load_in_4bit=True,
+                            bnb_4bit_compute_dtype=torch.bfloat16,
+                            bnb_4bit_quant_type="nf4",
+                        )
+                    else:
+                        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+                    logger.info("Weight quantization: %d-bit via bitsandbytes", quantize_bits)
+                except Exception as exc:
+                    logger.warning("bitsandbytes unavailable (%s), loading in bfloat16", exc)
+
             with force_offline_if_cached(is_cached, model_name):
                 if self.device == "cpu":
                     self.model = Qwen3TTSModel.from_pretrained(
@@ -106,7 +140,17 @@ class PyTorchTTSBackend:
                         torch_dtype=torch.float32,
                         low_cpu_mem_usage=False,
                     )
-                else:
+                elif bnb_config is not None:
+                    try:
+                        self.model = Qwen3TTSModel.from_pretrained(
+                            model_path,
+                            device_map={"": 0},
+                            quantization_config=bnb_config,
+                        )
+                    except Exception as exc:
+                        logger.warning("Quantized load failed (%s), falling back to bfloat16", exc)
+                        bnb_config = None
+                if bnb_config is None and self.device != "cpu":
                     self.model = Qwen3TTSModel.from_pretrained(
                         model_path,
                         device_map=self.device,
@@ -115,6 +159,11 @@ class PyTorchTTSBackend:
 
         self._current_model_size = model_size
         self.model_size = model_size
+
+        # Enable TurboQuant KV cache compression for VRAM savings
+        from ..utils.turboquant_cache import enable_kv_compression
+        enable_kv_compression(self.model, self.device)
+
         logger.info("TTS model %s loaded successfully", model_size)
 
     def unload_model(self):
@@ -165,6 +214,10 @@ class PyTorchTTSBackend:
 
         def _create_prompt_sync():
             """Run synchronous voice prompt creation in thread pool."""
+            # Inference runs with the process's default HF_HUB_OFFLINE
+            # state. Forcing offline here (issue #462) regressed online
+            # users whose libraries issue legitimate metadata lookups
+            # during voice-prompt creation.
             return self.model.create_voice_clone_prompt(
                 ref_audio=str(audio_path),
                 ref_text=reference_text,
@@ -214,16 +267,25 @@ class PyTorchTTSBackend:
 
         def _generate_sync():
             """Run synchronous generation in thread pool."""
+            import time
+
             # Set seed if provided
             if seed is not None:
                 manual_seed(seed, self.device)
 
+            t0 = time.perf_counter()
             # Generate audio - this is the blocking operation
             wavs, sample_rate = self.model.generate_voice_clone(
                 text=text,
                 voice_clone_prompt=voice_prompt,
                 language=LANGUAGE_CODE_TO_NAME.get(language, "auto"),
                 instruct=instruct,
+            )
+            elapsed = time.perf_counter() - t0
+            audio_dur = len(wavs[0]) / sample_rate
+            logger.info(
+                "TTS inference: %.1fs wall → %.1fs audio (RTF=%.2f)",
+                elapsed, audio_dur, elapsed / audio_dur if audio_dur > 0 else 0,
             )
             return wavs[0], sample_rate
 
@@ -279,15 +341,18 @@ class PyTorchSTTBackend:
 
         with model_load_progress(progress_model_name, is_cached):
             from transformers import WhisperProcessor, WhisperForConditionalGeneration
-
             model_name = WHISPER_HF_REPOS.get(model_size, f"openai/whisper-{model_size}")
             logger.info("Loading Whisper model %s on %s...", model_size, self.device)
 
-            with force_offline_if_cached(is_cached, progress_model_name):
-                self.processor = WhisperProcessor.from_pretrained(model_name)
-                self.model = WhisperForConditionalGeneration.from_pretrained(model_name)
+            self.processor = WhisperProcessor.from_pretrained(model_name)
+            self.model = WhisperForConditionalGeneration.from_pretrained(model_name)
 
         self.model.to(self.device)
+
+        # Enable TurboQuant KV cache compression for VRAM savings
+        from ..utils.turboquant_cache import enable_kv_compression
+        enable_kv_compression(self.model, self.device)
+
         self.model_size = model_size
         logger.info("Whisper model %s loaded successfully", model_size)
 
@@ -325,8 +390,12 @@ class PyTorchSTTBackend:
         def _transcribe_sync():
             """Run synchronous transcription in thread pool."""
             # Load audio
-            audio, sr = load_audio(audio_path, sample_rate=16000)
+            audio, _sr = load_audio(audio_path, sample_rate=16000)
 
+            # Inference runs with the process's default HF_HUB_OFFLINE
+            # state — forcing offline here (issue #462) broke online users
+            # whose `get_decoder_prompt_ids` / tokenizer calls issue
+            # legitimate metadata lookups.
             # Process audio
             inputs = self.processor(
                 audio,

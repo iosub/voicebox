@@ -179,8 +179,44 @@ class HumeTadaBackend:
             logger.info(f"Loading TADA {model_size} model...")
             config = TadaConfig.from_pretrained(repo)
             config.tokenizer_name = tokenizer_path
-            self.model = TadaForCausalLM.from_pretrained(repo, config=config, torch_dtype=model_dtype).to(device)
+
+            import os
+            quantize_bits = int(os.environ.get("QUANTIZE_BITS", "16"))
+            bnb_config = None
+
+            if quantize_bits in (4, 8) and device != "cpu":
+                try:
+                    import bitsandbytes  # noqa: F401 – verify native lib loads
+                    from transformers import BitsAndBytesConfig
+                    if quantize_bits == 4:
+                        bnb_config = BitsAndBytesConfig(
+                            load_in_4bit=True,
+                            bnb_4bit_compute_dtype=torch.bfloat16,
+                            bnb_4bit_quant_type="nf4",
+                        )
+                    else:
+                        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+                    logger.info("TADA weight quantization: %d-bit via bitsandbytes", quantize_bits)
+                except Exception as exc:
+                    logger.warning("bitsandbytes unavailable (%s), loading in %s", exc, model_dtype)
+
+            if bnb_config is not None:
+                try:
+                    self.model = TadaForCausalLM.from_pretrained(
+                        repo, config=config, quantization_config=bnb_config, device_map=device,
+                    )
+                except Exception as exc:
+                    logger.warning("Quantized load failed (%s), falling back to %s", exc, model_dtype)
+                    bnb_config = None
+            if bnb_config is None:
+                self.model = TadaForCausalLM.from_pretrained(
+                    repo, config=config, torch_dtype=model_dtype,
+                ).to(device)
             self.model.eval()
+
+            # Enable TurboQuant KV cache compression for VRAM savings
+            from ..utils.turboquant_cache import enable_kv_compression
+            enable_kv_compression(self.model, device)
 
         logger.info(f"HumeAI TADA {model_size} loaded successfully on {device}")
 

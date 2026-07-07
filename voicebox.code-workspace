@@ -5,6 +5,9 @@
 		},
 		{
 			"path": "../../voice/Voice-xtt2-openai"
+		},
+		{
+			"path": "../turboquant-gpu"
 		}
 	],
 	"settings": {}

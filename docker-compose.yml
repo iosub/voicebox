@@ -6,7 +6,7 @@ services:
 
     ports:
       # Bind to localhost only for security
-      - "127.0.0.1:8000:17493"
+      - "127.0.0.1:17493:17493"
 
     volumes:
       # Bind-mount for generated audio (customize the host path as needed)
@@ -14,17 +14,19 @@ services:
       # Container side: /app/data/generations/
       - ./output:/app/data/generations
 
-      # Mount backend source for fast Python-only iteration without rebuilding
-      - ./backend:/app/backend
-
       # Named volume for profiles, DB, cache (persists across container restarts)
       - voicebox-data:/app/data
 
-    runtime: nvidia
+      # HuggingFace model cache (so models aren't re-downloaded on rebuild)
+      - huggingface-cache:/home/voicebox/.cache/huggingface
 
     environment:
       - LOG_LEVEL=info
       - VOICEBOX_MODELS_DIR=/app/data/models
+      - TURBOQUANT_ENABLED=1
+      - TURBOQUANT_BITS=2
+      - TURBOQUANT_MIN_SEQ=16
+      - QUANTIZE_BITS=16
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
@@ -36,11 +38,6 @@ services:
         limits:
           cpus: '4'
           memory: 8G
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
 networks:
   voicebox-net:
@@ -48,3 +45,4 @@ networks:
 
 volumes:
   voicebox-data:
+  huggingface-cache:
