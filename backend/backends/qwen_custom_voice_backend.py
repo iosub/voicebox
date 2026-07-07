@@ -203,6 +203,10 @@ class QwenCustomVoiceBackend:
             if instruct:
                 kwargs["instruct"] = instruct
 
+            # Inference runs with the process's default HF_HUB_OFFLINE
+            # state. Forcing offline here (issue #462) regressed online
+            # users whose libraries issue legitimate metadata lookups
+            # during generation.
             wavs, sample_rate = self.model.generate_custom_voice(**kwargs)
             return wavs[0], sample_rate
 

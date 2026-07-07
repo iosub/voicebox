@@ -65,6 +65,7 @@ async def create_generation(
     status: str = "completed",
     engine: Optional[str] = "qwen",
     model_size: Optional[str] = None,
+    source: str = "manual",
 ) -> GenerationResponse:
     """
     Create a new generation history entry.
@@ -82,6 +83,10 @@ async def create_generation(
         status: Generation status (generating, completed, failed)
         engine: TTS engine used (qwen, luxtts, chatterbox, chatterbox_turbo)
         model_size: Model size variant (1.7B, 0.6B) — only relevant for qwen
+        source: Origin marker stored on the row. ``"manual"`` for regular
+            /generate calls; ``"personality_speak"`` for rows created
+            by the /profiles/{id}/speak endpoint. Enables filtering the
+            history view for personality-driven output.
 
     Returns:
         Created generation entry
@@ -98,6 +103,7 @@ async def create_generation(
         engine=engine,
         model_size=model_size,
         status=status,
+        source=source,
         created_at=datetime.utcnow(),
     )
 
@@ -264,6 +270,43 @@ async def delete_generation(
     return True
 
 
+async def delete_failed_generations(db: Session) -> int:
+    """
+    Delete every generation whose status is 'failed'.
+
+    Used by the "Clear failed" action in the UI so users can tidy up
+    history after the model wasn't loaded, the app was closed mid-run,
+    or a generation otherwise errored out (see issue #410).
+
+    Returns:
+        Number of generations deleted.
+    """
+    from . import versions as versions_mod
+
+    failed = db.query(DBGeneration).filter(DBGeneration.status == "failed").all()
+    count = 0
+    for generation in failed:
+        # Clean up version files/rows first.
+        versions_mod.delete_versions_for_generation(generation.id, db)
+
+        # Remove the main audio file if it somehow made it to disk.
+        if generation.audio_path:
+            audio_path = config.resolve_storage_path(generation.audio_path)
+            if audio_path is not None and audio_path.exists():
+                try:
+                    audio_path.unlink()
+                except OSError:
+                    # Best-effort cleanup — don't abort the whole sweep
+                    # if a single file can't be removed.
+                    pass
+
+        db.delete(generation)
+        count += 1
+
+    db.commit()
+    return count
+
+
 async def delete_generations_by_profile(
     profile_id: str,
     db: Session,
@@ -282,6 +325,10 @@ async def delete_generations_by_profile(
     
     count = 0
     for generation in generations:
+        # Delete associated version files and rows first
+        from . import versions as versions_mod
+        versions_mod.delete_versions_for_generation(generation.id, db)
+
         # Delete audio file
         audio_path = config.resolve_storage_path(generation.audio_path)
         if audio_path is not None and audio_path.exists():

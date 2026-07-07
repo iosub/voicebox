@@ -7,6 +7,7 @@ absolute imports instead of relative imports.
 
 import sys
 import os
+import re
 
 # On Windows with --noconsole (PyInstaller), sys.stdout/stderr are None.
 # They can also be broken file objects in some edge cases.
@@ -46,6 +47,17 @@ if "--version" in sys.argv:
     from backend import __version__
     print(f"voicebox-server {__version__}")
     sys.exit(0)
+
+# Detect backend variant from binary name BEFORE importing backend modules
+# so that env-var guards in app.py (e.g. HSA_OVERRIDE_GFX_VERSION) fire at import time.
+_binary_name = os.path.basename(sys.executable).lower()
+if re.search(r"voicebox-server-rocm(\.exe)?$", _binary_name):
+    os.environ["VOICEBOX_BACKEND_VARIANT"] = "rocm"
+elif re.search(r"voicebox-server-cuda(\.exe)?$", _binary_name):
+    os.environ["VOICEBOX_BACKEND_VARIANT"] = "cuda"
+else:
+    os.environ.setdefault("VOICEBOX_BACKEND_VARIANT", "cpu")
+
 
 import logging
 
@@ -105,6 +117,11 @@ def _start_parent_watchdog(parent_pid, data_dir=None):
     This is the clean shutdown mechanism: instead of the Tauri app trying to
     forcefully kill the server (which spawns console windows on Windows),
     the server monitors its parent and shuts itself down gracefully.
+
+    The Tauri app writes a .keep-running sentinel file to data_dir before
+    exiting when "remain running after close" is enabled. This is a reliable
+    fallback for the HTTP /watchdog/disable request, which can race with
+    process exit on Windows.
     """
     import os
     import signal
@@ -164,6 +181,19 @@ def _start_parent_watchdog(parent_pid, data_dir=None):
         if not alive:
             watchdog_logger.warning(f"Parent PID {parent_pid} not found on first check — disabling watchdog")
             return
+        # Clear any stale .keep-running sentinel from a previous session. The
+        # sentinel is only removed by the watchdog when it's consumed during a
+        # grace period; if the HTTP /watchdog/disable path wins the race on a
+        # "keep running" exit, the sentinel is left on disk. Wipe it here so a
+        # future session can't inherit that stale signal.
+        if data_dir:
+            stale = os.path.join(data_dir, ".keep-running")
+            if os.path.exists(stale):
+                try:
+                    os.remove(stale)
+                    watchdog_logger.info("Removed stale .keep-running sentinel from previous session")
+                except OSError as e:
+                    watchdog_logger.warning(f"Failed to remove stale sentinel: {e}")
         while True:
             if _watchdog_disabled:
                 watchdog_logger.info("Watchdog disabled (keep server running), stopping monitor")
@@ -177,6 +207,18 @@ def _start_parent_watchdog(parent_pid, data_dir=None):
                 time.sleep(1)
                 if _watchdog_disabled:
                     watchdog_logger.info("Watchdog was disabled during grace period, keeping server alive")
+                    return
+                # Check for sentinel file written by Tauri before exit.
+                # This catches the case where the HTTP disable request
+                # didn't arrive before the parent process died (common
+                # on Windows where process teardown is fast).
+                sentinel = os.path.join(data_dir, ".keep-running") if data_dir else None
+                if sentinel and os.path.exists(sentinel):
+                    watchdog_logger.info("Found .keep-running sentinel file, keeping server alive")
+                    try:
+                        os.remove(sentinel)
+                    except OSError:
+                        pass
                     return
                 watchdog_logger.info("Watchdog still enabled after grace period, shutting down server...")
                 if sys.platform == "win32":
@@ -230,16 +272,7 @@ if __name__ == "__main__":
         if args.parent_pid is not None and args.parent_pid <= 0:
             parser.error("--parent-pid must be a positive integer")
 
-        # Detect backend variant from binary name
-        # voicebox-server-cuda → sets VOICEBOX_BACKEND_VARIANT=cuda
-        import os
-        binary_name = os.path.basename(sys.executable).lower()
-        if "cuda" in binary_name:
-            os.environ["VOICEBOX_BACKEND_VARIANT"] = "cuda"
-            logger.info("Backend variant: CUDA")
-        else:
-            os.environ["VOICEBOX_BACKEND_VARIANT"] = "cpu"
-            logger.info("Backend variant: CPU")
+        logger.info(f"Backend variant: {os.environ.get('VOICEBOX_BACKEND_VARIANT', 'cpu').upper()}")
 
         # Register parent watchdog to start after server is fully ready
         if args.parent_pid is not None:

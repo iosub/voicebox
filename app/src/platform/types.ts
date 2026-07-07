@@ -42,7 +42,7 @@ export interface AudioDevice {
 }
 
 export interface PlatformAudio {
-  isSystemAudioSupported(): boolean;
+  isSystemAudioSupported(): Promise<boolean>;
   startSystemAudioCapture(maxDurationSecs: number): Promise<void>;
   stopSystemAudioCapture(): Promise<Blob>;
   listOutputDevices(): Promise<AudioDevice[]>;
@@ -60,6 +60,7 @@ export interface PlatformLifecycle {
   stopServer(): Promise<void>;
   restartServer(modelsDir?: string | null): Promise<string>;
   setKeepServerRunning(keep: boolean): Promise<void>;
+  setBackendOverride(backend?: string | null): Promise<void>;
   setupWindowCloseHandler(): Promise<void>;
   subscribeToServerLogs(callback: (entry: ServerLogEntry) => void): () => void;
   onServerReady?: () => void;

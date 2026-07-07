@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .. import config, models
 from ..services import tts
 from ..database import get_db
-from ..utils.platform_detect import get_backend_type
+from ..utils.platform_detect import get_backend_type, is_amd_gpu_windows
 
 router = APIRouter()
 
@@ -93,11 +93,20 @@ async def health():
     except ImportError:
         pass
 
+    gpu_compat_warning = None
+    if has_cuda:
+        from ..backends.base import check_cuda_compatibility
+
+        _compatible, gpu_compat_warning = check_cuda_compatibility()
+
     gpu_available = has_cuda or has_mps or has_xpu or has_directml or backend_type == "mlx"
 
     gpu_type = None
     if has_cuda:
-        gpu_type = f"CUDA ({torch.cuda.get_device_name(0)})"
+        if hasattr(torch.version, "hip") and torch.version.hip:
+            gpu_type = f"ROCm ({torch.cuda.get_device_name(0)})"
+        else:
+            gpu_type = f"CUDA ({torch.cuda.get_device_name(0)})"
     elif has_mps:
         gpu_type = "MPS (Apple Silicon)"
     elif backend_type == "mlx":
@@ -158,6 +167,15 @@ async def health():
     except Exception:
         pass
 
+    default_variant = "cpu"
+    if has_cuda:
+        if hasattr(torch.version, "hip") and torch.version.hip:
+            default_variant = "rocm"
+        else:
+            default_variant = "cuda"
+    elif has_xpu:
+        default_variant = "xpu"
+
     return models.HealthResponse(
         status="healthy",
         model_loaded=model_loaded,
@@ -167,10 +185,9 @@ async def health():
         gpu_type=gpu_type,
         vram_used_mb=vram_used,
         backend_type=backend_type,
-        backend_variant=os.environ.get(
-            "VOICEBOX_BACKEND_VARIANT",
-            "cuda" if torch.cuda.is_available() else ("xpu" if has_xpu else "cpu"),
-        ),
+        backend_variant=os.environ.get("VOICEBOX_BACKEND_VARIANT", default_variant),
+        supports_rocm=is_amd_gpu_windows(),
+        gpu_compatibility_warning=gpu_compat_warning,
     )
 
 
@@ -181,6 +198,7 @@ async def filesystem_health():
 
     dirs_to_check = {
         "generations": config.get_generations_dir(),
+        "captures": config.get_captures_dir(),
         "profiles": config.get_profiles_dir(),
         "data": config.get_data_dir(),
     }

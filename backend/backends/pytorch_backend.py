@@ -133,10 +133,18 @@ class PyTorchTTSBackend:
                 except Exception as exc:
                     logger.warning("bitsandbytes unavailable (%s), loading in bfloat16", exc)
 
+            # Route both HF Hub and Transformers through a single cache root.
+            # On Windows local setups, model assets can otherwise split between
+            # .hf-cache/hub and .hf-cache/transformers, causing speech_tokenizer
+            # and preprocessor_config.json to fail to resolve during load.
+            from huggingface_hub import constants as hf_constants
+            tts_cache_dir = hf_constants.HF_HUB_CACHE
+
             with force_offline_if_cached(is_cached, model_name):
                 if self.device == "cpu":
                     self.model = Qwen3TTSModel.from_pretrained(
                         model_path,
+                        cache_dir=tts_cache_dir,
                         torch_dtype=torch.float32,
                         low_cpu_mem_usage=False,
                     )
@@ -144,6 +152,7 @@ class PyTorchTTSBackend:
                     try:
                         self.model = Qwen3TTSModel.from_pretrained(
                             model_path,
+                            cache_dir=tts_cache_dir,
                             device_map={"": 0},
                             quantization_config=bnb_config,
                         )
@@ -153,6 +162,7 @@ class PyTorchTTSBackend:
                 if bnb_config is None and self.device != "cpu":
                     self.model = Qwen3TTSModel.from_pretrained(
                         model_path,
+                        cache_dir=tts_cache_dir,
                         device_map=self.device,
                         torch_dtype=torch.bfloat16,
                     )

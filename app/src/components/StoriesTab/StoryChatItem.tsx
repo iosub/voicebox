@@ -1,7 +1,8 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { GripVertical, Mic, MoreHorizontal, Play, Trash2 } from 'lucide-react';
+import { GripVertical, Mic, MoreHorizontal, Music, Play, RotateCcw, Trash2 } from 'lucide-react';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -20,6 +21,7 @@ interface StoryChatItemProps {
   storyId: string;
   index: number;
   onRemove: () => void;
+  onRegenerate?: () => void;
   currentTimeMs: number;
   isPlaying: boolean;
   dragHandleProps?: React.HTMLAttributes<HTMLButtonElement>;
@@ -29,11 +31,13 @@ interface StoryChatItemProps {
 export function StoryChatItem({
   item,
   onRemove,
+  onRegenerate,
   currentTimeMs,
   isPlaying,
   dragHandleProps,
   isDragging,
 }: StoryChatItemProps) {
+  const { t } = useTranslation();
   const seek = useStoryStore((state) => state.seek);
   const serverUrl = useServerStore((state) => state.serverUrl);
   const [avatarError, setAvatarError] = useState(false);
@@ -81,13 +85,15 @@ export function StoryChatItem({
       {/* Voice Avatar */}
       <div className="shrink-0">
         <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center overflow-hidden">
-          {!avatarError ? (
+          {item.engine === 'import' ? (
+            <Music className="h-5 w-5 text-muted-foreground" />
+          ) : !avatarError ? (
             <img
               src={avatarUrl}
               alt={`${item.profile_name} avatar`}
               className={cn(
                 'h-full w-full object-cover transition-all duration-200',
-                !isCurrentlyPlaying && 'grayscale'
+                !isCurrentlyPlaying && 'grayscale',
               )}
               onError={() => setAvatarError(true)}
             />
@@ -100,36 +106,56 @@ export function StoryChatItem({
       {/* Content */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-2">
-          <span className="font-medium text-sm">{item.profile_name}</span>
-          <span className="text-xs text-muted-foreground">{item.language}</span>
+          <span className="font-medium text-sm truncate">
+            {item.engine === 'import' ? item.text : item.profile_name}
+          </span>
+          {item.engine !== 'import' && (
+            <span className="text-xs text-muted-foreground">{item.language}</span>
+          )}
           <span className="text-xs text-muted-foreground tabular-nums ml-auto">
             {formatTime(itemStartMs)}
           </span>
         </div>
-        <Textarea
-          value={item.text}
-          className="flex-1 resize-none text-sm text-muted-foreground select-text bg-card cursor-text"
-          readOnly
-          onDoubleClick={handlePlay}
-        />
+        {item.engine === 'import' ? null : (
+          <Textarea
+            value={item.text}
+            className="flex-1 resize-none text-sm text-muted-foreground select-text bg-card cursor-text"
+            readOnly
+            onDoubleClick={handlePlay}
+          />
+        )}
       </div>
 
       {/* Actions */}
       <div className="shrink-0">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Actions">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              aria-label={t('history.actions.menu')}
+            >
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={handlePlay}>
               <Play className="mr-2 h-4 w-4" />
-              Play from here
+              {t('storyContent.itemActions.playFromHere')}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={onRemove} className="text-destructive focus:text-destructive">
+            {onRegenerate && (
+              <DropdownMenuItem onClick={onRegenerate}>
+                <RotateCcw className="mr-2 h-4 w-4" />
+                {t('storyContent.itemActions.regenerate')}
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem
+              onClick={onRemove}
+              className="text-destructive focus:text-destructive"
+            >
               <Trash2 className="mr-2 h-4 w-4" />
-              Remove from Story
+              {t('storyContent.itemActions.removeFromStory')}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -139,15 +165,12 @@ export function StoryChatItem({
 }
 
 // Sortable wrapper component
-export function SortableStoryChatItem(props: Omit<StoryChatItemProps, 'dragHandleProps' | 'isDragging'>) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: props.item.generation_id });
+export function SortableStoryChatItem(
+  props: Omit<StoryChatItemProps, 'dragHandleProps' | 'isDragging'>,
+) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: props.item.generation_id,
+  });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -156,11 +179,7 @@ export function SortableStoryChatItem(props: Omit<StoryChatItemProps, 'dragHandl
 
   return (
     <div ref={setNodeRef} style={style} {...attributes}>
-      <StoryChatItem
-        {...props}
-        dragHandleProps={listeners}
-        isDragging={isDragging}
-      />
+      <StoryChatItem {...props} dragHandleProps={listeners} isDragging={isDragging} />
     </div>
   );
 }

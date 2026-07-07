@@ -43,6 +43,26 @@ setup-python:
     fi
     echo "Installing Python dependencies..."
     {{ pip }} install --upgrade pip -q
+    if [ "$(uname)" = "Linux" ]; then
+        torch_index=""
+        if [ -e /proc/driver/nvidia/version ] || [ -d /sys/module/nvidia ]; then
+            echo "Detected NVIDIA GPU — installing CUDA PyTorch..."
+            torch_index="https://download.pytorch.org/whl/cu128"
+        elif [ -e /dev/kfd ]; then
+            if [ -n "${VOICEBOX_ROCM_VERSION:-}" ]; then
+                rocm_ver="$VOICEBOX_ROCM_VERSION"
+            elif lspci 2>/dev/null | grep -qi "Navi 4"; then
+                rocm_ver=7.2
+            else
+                rocm_ver=6.3
+            fi
+            echo "Detected AMD GPU — installing ROCm PyTorch (rocm${rocm_ver})..."
+            torch_index="https://download.pytorch.org/whl/rocm${rocm_ver}"
+        fi
+        if [ -n "$torch_index" ]; then
+            {{ pip }} install torch torchaudio --index-url "$torch_index"
+        fi
+    fi
     {{ pip }} install -r {{ backend_dir }}/requirements.txt
     # Chatterbox pins numpy<1.26 / torch==2.6 which break on Python 3.12+
     {{ pip }} install --no-deps chatterbox-tts
@@ -294,6 +314,15 @@ fix-python: _ensure-venv
 # Run Python tests
 test: _ensure-venv
     {{ venv_bin }}/python -m pytest {{ backend_dir }}/tests -v
+
+# E2E: generate with every TTS model against the frozen binary (pass extra flags like --only kokoro)
+[unix]
+test-models *ARGS: _ensure-venv
+    {{ venv_bin }}/python {{ backend_dir }}/tests/test_all_models_e2e.py {{ ARGS }}
+
+[windows]
+test-models *ARGS: _ensure-venv
+    & "{{ python }}" {{ backend_dir }}/tests/test_all_models_e2e.py {{ ARGS }}
 
 # ─── Database ─────────────────────────────────────────────────────────
 

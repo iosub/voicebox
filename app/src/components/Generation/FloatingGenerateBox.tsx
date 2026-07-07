@@ -1,8 +1,9 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useMatchRoute } from '@tanstack/react-router';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Loader2, Sparkles } from 'lucide-react';
+import { Dices, Loader2, SlidersHorizontal, Sparkles, Wand2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Form, FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form';
 import {
@@ -13,6 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { useToast } from '@/components/ui/use-toast';
 import { apiClient } from '@/lib/api/client';
 import { getLanguageOptionsForEngine, type LanguageCode } from '@/lib/constants/languages';
 import { useGenerationForm } from '@/lib/hooks/useGenerationForm';
@@ -34,12 +36,14 @@ export function FloatingGenerateBox({
   isPlayerOpen = false,
   showVoiceSelector = false,
 }: FloatingGenerateBoxProps) {
+  const { t } = useTranslation();
   const selectedProfileId = useUIStore((state) => state.selectedProfileId);
   const setSelectedProfileId = useUIStore((state) => state.setSelectedProfileId);
   const setSelectedEngine = useUIStore((state) => state.setSelectedEngine);
   const { data: selectedProfile } = useProfile(selectedProfileId || '');
   const { data: profiles } = useProfiles();
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isInstructExpanded, setIsInstructExpanded] = useState(false);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -49,6 +53,21 @@ export function FloatingGenerateBox({
   const trackEditorHeight = useStoryStore((state) => state.trackEditorHeight);
   const { data: currentStory } = useStory(selectedStoryId);
   const addPendingStoryAdd = useGenerationStore((s) => s.addPendingStoryAdd);
+  const { toast } = useToast();
+
+  const composeMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedProfileId) throw new Error('No profile selected');
+      return apiClient.composeWithPersonality(selectedProfileId);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: t('generation.compose.failedTitle'),
+        description: err.message || t('generation.compose.failedDescription'),
+        variant: 'destructive',
+      });
+    },
+  });
 
   // Fetch effect presets for the dropdown
   const { data: effectPresets } = useQuery({
@@ -125,22 +144,29 @@ export function FloatingGenerateBox({
   }, [watchedEngine, setSelectedEngine]);
 
   // Sync generation form language, engine, and effects with selected profile
+  type EngineValue =
+    | 'qwen'
+    | 'luxtts'
+    | 'chatterbox'
+    | 'chatterbox_turbo'
+    | 'tada'
+    | 'kokoro'
+    | 'qwen_custom_voice';
   useEffect(() => {
     if (selectedProfile?.language) {
       form.setValue('language', selectedProfile.language as LanguageCode);
     }
-    // Auto-switch engine if profile has a default
-    if (selectedProfile?.default_engine) {
-      form.setValue(
-        'engine',
-        selectedProfile.default_engine as
-          | 'qwen'
-          | 'luxtts'
-          | 'chatterbox'
-          | 'chatterbox_turbo'
-          | 'tada'
-          | 'kokoro',
-      );
+    // Auto-switch engine to match the profile
+    const engine = selectedProfile?.default_engine ?? selectedProfile?.preset_engine;
+    if (engine) {
+      form.setValue('engine', engine as EngineValue);
+    } else if (selectedProfile && selectedProfile.voice_type !== 'preset') {
+      // Cloned/designed profile with no default — ensure a compatible (non-preset) engine
+      const currentEngine = form.getValues('engine');
+      const presetEngines = new Set(['kokoro', 'qwen_custom_voice']);
+      if (currentEngine && presetEngines.has(currentEngine)) {
+        form.setValue('engine', 'qwen');
+      }
     }
     // Pre-fill effects from profile defaults
     if (
@@ -164,6 +190,10 @@ export function FloatingGenerateBox({
       (!selectedProfile.effects_chain || selectedProfile.effects_chain.length === 0)
     ) {
       setSelectedPresetId(null);
+    }
+    // Persona toggle only applies when the profile has a personality prompt.
+    if (selectedProfile && !selectedProfile.personality?.trim()) {
+      form.setValue('personality', false);
     }
   }, [selectedProfile, effectPresets, form]);
 
@@ -225,10 +255,10 @@ export function FloatingGenerateBox({
     <motion.div
       ref={containerRef}
       className={cn(
-        'fixed right-auto',
+        'fixed',
         isStoriesRoute
-          ? // Position aligned with story list: after sidebar + padding, width 360px
-            'left-[calc(5rem+2rem)] w-[360px]'
+          ? // Aligned with StoryContent: sidebar + list width + gap (tab bleeds with -mx-8)
+            'left-[calc(5rem+360px+1.5rem)] right-8'
           : 'left-[calc(5rem+2rem)] right-8 lg:right-auto lg:w-[calc((100%-5rem-4rem)/2-1rem)]',
       )}
       style={{
@@ -268,10 +298,12 @@ export function FloatingGenerateBox({
                               onChange={field.onChange}
                               placeholder={
                                 isStoriesRoute && currentStory
-                                  ? `Generate speech for "${currentStory.name}"... (type / for effects)`
+                                  ? t('generation.placeholder.storyWithEffects', {
+                                      name: currentStory.name,
+                                    })
                                   : selectedProfile
-                                    ? `Type / for effects like [laugh], [sigh]...`
-                                    : 'Select a voice profile above...'
+                                    ? t('generation.placeholder.effectsHint')
+                                    : t('generation.placeholder.selectVoice')
                               }
                               className="px-3 py-2 resize-none bg-transparent border-none focus-visible:ring-0 focus-visible:ring-offset-0 focus:outline-none focus:ring-0 outline-none ring-0 rounded-2xl text-sm w-full"
                               style={{
@@ -294,10 +326,12 @@ export function FloatingGenerateBox({
                               }}
                               placeholder={
                                 isStoriesRoute && currentStory
-                                  ? `Generate speech for "${currentStory.name}"...`
+                                  ? t('generation.placeholder.story', { name: currentStory.name })
                                   : selectedProfile
-                                    ? `Generate speech using ${selectedProfile.name}...`
-                                    : 'Select a voice profile above...'
+                                    ? t('generation.placeholder.profile', {
+                                        name: selectedProfile.name,
+                                      })
+                                    : t('generation.placeholder.selectVoice')
                               }
                               className="resize-none bg-transparent border-none focus-visible:ring-0 focus-visible:ring-offset-0 focus:outline-none focus:ring-0 outline-none ring-0 rounded-2xl text-sm placeholder:text-muted-foreground/60 w-full"
                               style={{
@@ -317,7 +351,129 @@ export function FloatingGenerateBox({
                 />
               </motion.div>
 
-              <div className="relative shrink-0">
+              <div className="flex items-start gap-2 shrink-0">
+                {/* Compose — fills the textarea with a fresh in-character line. */}
+                <AnimatePresence>
+                  {selectedProfile?.personality?.trim() && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <div className="group relative">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          disabled={composeMutation.isPending || !selectedProfileId}
+                          onClick={async () => {
+                            const result = await composeMutation.mutateAsync();
+                            form.setValue('text', result.text, { shouldDirty: true });
+                            setIsExpanded(true);
+                          }}
+                          className="h-10 w-10 rounded-full bg-card border border-border hover:bg-background/50 transition-all duration-200"
+                          aria-label={t('generation.compose.ariaLabel')}
+                        >
+                          {composeMutation.isPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Dices className="h-4 w-4" />
+                          )}
+                        </Button>
+                        <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 whitespace-nowrap rounded-md bg-popover px-3 py-1.5 text-xs text-popover-foreground border border-border opacity-0 transition-opacity group-hover:opacity-100 z-[9999]">
+                          {t('generation.compose.tooltip')}
+                        </span>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Persona — rewrite input through the profile's personality LLM before TTS. */}
+                <AnimatePresence>
+                  {selectedProfile?.personality?.trim() && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <FormField
+                        control={form.control}
+                        name="personality"
+                        render={({ field }) => {
+                          const active = !!field.value;
+                          return (
+                            <FormItem className="space-y-0">
+                              <FormControl>
+                                <div className="group relative">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => field.onChange(!active)}
+                                    className={cn(
+                                      'h-10 w-10 rounded-full transition-all duration-200',
+                                      active
+                                        ? 'bg-accent text-accent-foreground border border-accent hover:bg-accent/90'
+                                        : 'bg-card border border-border hover:bg-background/50',
+                                    )}
+                                    aria-label={active ? t('generation.persona.ariaLabelActive') : t('generation.persona.ariaLabelInactive')}
+                                    aria-pressed={active}
+                                  >
+                                    <Wand2 className="h-4 w-4" />
+                                  </Button>
+                                  <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 whitespace-nowrap rounded-md bg-popover px-3 py-1.5 text-xs text-popover-foreground border border-border opacity-0 transition-opacity group-hover:opacity-100 z-[9999]">
+                                    {active ? t('generation.persona.tooltipActive') : t('generation.persona.tooltipInactive')}
+                                  </span>
+                                </div>
+                              </FormControl>
+                            </FormItem>
+                          );
+                        }}
+                      />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Instruct toggle — only for Qwen CustomVoice, which actually honors the kwarg */}
+                <AnimatePresence>
+                  {isExpanded && form.watch('engine') === 'qwen_custom_voice' && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <div className="group relative">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setIsInstructExpanded((prev) => !prev)}
+                          className={cn(
+                            'h-10 w-10 rounded-full transition-all duration-200',
+                            isInstructExpanded
+                              ? 'bg-accent text-accent-foreground border border-accent hover:bg-accent/90'
+                              : 'bg-card border border-border hover:bg-background/50',
+                          )}
+                          aria-label={
+                            isInstructExpanded
+                              ? t('generation.instruct.hide')
+                              : t('generation.instruct.show')
+                          }
+                          aria-pressed={isInstructExpanded}
+                        >
+                          <SlidersHorizontal className="h-4 w-4" />
+                        </Button>
+                        <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 whitespace-nowrap rounded-md bg-popover px-3 py-1.5 text-xs text-popover-foreground border border-border opacity-0 transition-opacity group-hover:opacity-100 z-[9999]">
+                          {t('generation.instruct.tooltip')}
+                        </span>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
                 <div className="group relative">
                   <Button
                     type="submit"
@@ -326,10 +482,10 @@ export function FloatingGenerateBox({
                     size="icon"
                     aria-label={
                       isPending
-                        ? 'Generating...'
+                        ? t('generation.button.generating')
                         : !selectedProfileId
-                          ? 'Select a voice profile first'
-                          : 'Generate speech'
+                          ? t('generation.button.selectFirst')
+                          : t('generation.button.generate')
                     }
                   >
                     {isPending ? (
@@ -340,14 +496,46 @@ export function FloatingGenerateBox({
                   </Button>
                   <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 whitespace-nowrap rounded-md bg-popover px-3 py-1.5 text-xs text-popover-foreground border border-border opacity-0 transition-opacity group-hover:opacity-100 z-[9999]">
                     {isPending
-                      ? 'Generating...'
+                      ? t('generation.button.generating')
                       : !selectedProfileId
-                        ? 'Select a voice profile first'
-                        : 'Generate speech'}
+                        ? t('generation.button.selectFirst')
+                        : t('generation.button.generate')}
                   </span>
                 </div>
               </div>
             </div>
+
+            {/* Additive instruct textarea — shown below main text when toggle is on and engine supports it */}
+            <AnimatePresence>
+              {isInstructExpanded && form.watch('engine') === 'qwen_custom_voice' && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2, ease: 'easeOut' }}
+                  className="overflow-hidden"
+                >
+                  <FormField
+                    control={form.control}
+                    name="instruct"
+                    render={({ field }) => (
+                      <FormItem className="mt-2">
+                        <FormControl>
+                          <Textarea
+                            {...field}
+                            placeholder={t('generation.instruct.placeholder')}
+                            className="resize-none bg-transparent border border-accent/20 focus-visible:ring-1 focus-visible:ring-accent/40 rounded-2xl text-sm placeholder:text-muted-foreground/60 w-full px-3 py-2"
+                            style={{ minHeight: '60px', maxHeight: '160px' }}
+                            maxLength={500}
+                          />
+                        </FormControl>
+                        <FormMessage className="text-xs" />
+                      </FormItem>
+                    )}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             <AnimatePresence>
               <motion.div
@@ -365,7 +553,7 @@ export function FloatingGenerateBox({
                         onValueChange={(value) => setSelectedProfileId(value || null)}
                       >
                         <SelectTrigger className="h-8 text-xs bg-card border-border rounded-full hover:bg-background/50 transition-all w-full">
-                          <SelectValue placeholder="Select a voice..." />
+                          <SelectValue placeholder={t('generation.voiceSelector.placeholder')} />
                         </SelectTrigger>
                         <SelectContent>
                           {profiles?.map((profile) => (
@@ -377,6 +565,7 @@ export function FloatingGenerateBox({
                       </Select>
                     </div>
                   )}
+
 
                   <FormField
                     control={form.control}
@@ -419,16 +608,16 @@ export function FloatingGenerateBox({
                       }
                     >
                       <SelectTrigger className="h-8 text-xs bg-card border-border rounded-full hover:bg-background/50 transition-all">
-                        <SelectValue placeholder="No effects" />
+                        <SelectValue placeholder={t('generation.effects.none')} />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="none" className="text-xs">
-                          No effects
+                          {t('generation.effects.none')}
                         </SelectItem>
                         {selectedProfile?.effects_chain &&
                           selectedProfile.effects_chain.length > 0 && (
                             <SelectItem value="_profile" className="text-xs">
-                              Profile default
+                              {t('generation.effects.profileDefault')}
                             </SelectItem>
                           )}
                         {effectPresets?.map((preset) => (

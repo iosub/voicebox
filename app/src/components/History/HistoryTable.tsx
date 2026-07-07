@@ -1,21 +1,22 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  AlignCenter,
   AudioLines,
-  AudioWaveform,
   Download,
   FileArchive,
   Loader2,
   MoreHorizontal,
   Play,
   RotateCcw,
+  Square,
   Star,
   Trash2,
   Wand2,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
+import { AudioBars } from '@/components/AudioBars';
 import { EffectsChainEditor } from '@/components/Effects/EffectsChainEditor';
 import { Button } from '@/components/ui/button';
 import {
@@ -45,6 +46,7 @@ import { apiClient } from '@/lib/api/client';
 import type { EffectConfig, GenerationVersionResponse, HistoryResponse } from '@/lib/api/types';
 import { BOTTOM_SAFE_AREA_PADDING } from '@/lib/constants/ui';
 import {
+  useClearFailedGenerations,
   useDeleteGeneration,
   useExportGeneration,
   useExportGenerationAudio,
@@ -56,38 +58,8 @@ import { formatDate, formatDuration, formatEngineName } from '@/lib/utils/format
 import { useGenerationStore } from '@/stores/generationStore';
 import { usePlayerStore } from '@/stores/playerStore';
 
-// ─── Audio Bars ─────────────────────────────────────────────────────────────
-
-function AudioBars({ mode }: { mode: 'idle' | 'generating' | 'playing' }) {
-  const barColor = mode !== 'idle' ? 'bg-accent' : 'bg-muted-foreground/40';
-  return (
-    <div className="flex items-center gap-[2px] h-5">
-      {[0, 1, 2, 3, 4].map((i) => (
-        <motion.div
-          key={`${mode}-${i}`}
-          className={`w-[3px] rounded-full ${barColor}`}
-          animate={
-            mode === 'generating'
-              ? { height: ['6px', '16px', '6px'] }
-              : mode === 'playing'
-                ? { height: ['8px', '14px', '4px', '12px', '8px'] }
-                : { height: '8px' }
-          }
-          transition={
-            mode === 'generating'
-              ? { duration: 0.6, repeat: Infinity, delay: i * 0.08, ease: 'easeInOut' }
-              : mode === 'playing'
-                ? { duration: 1.2, repeat: Infinity, delay: i * 0.15, ease: 'easeInOut' }
-                : { duration: 0.4, ease: 'easeOut' }
-          }
-        />
-      ))}
-    </div>
-  );
-}
-
-// NEW ALTERNATE HISTORY VIEW - FIXED HEIGHT ROWS WITH INFINITE SCROLL
 export function HistoryTable() {
+  const { t } = useTranslation();
   const [page, setPage] = useState(0);
   const [allHistory, setAllHistory] = useState<HistoryResponse[]>([]);
   const [total, setTotal] = useState(0);
@@ -124,9 +96,28 @@ export function HistoryTable() {
   });
 
   const deleteGeneration = useDeleteGeneration();
+  const clearFailed = useClearFailedGenerations();
+  const [clearFailedDialogOpen, setClearFailedDialogOpen] = useState(false);
   const exportGeneration = useExportGeneration();
   const exportGenerationAudio = useExportGenerationAudio();
   const importGeneration = useImportGeneration();
+  const cancelGeneration = useMutation({
+    mutationFn: (generationId: string) => apiClient.cancelGeneration(generationId),
+    onSuccess: async (data) => {
+      await queryClient.invalidateQueries({ queryKey: ['history'] });
+      toast({
+        title: 'Cancelling generation',
+        description: data.message,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Cancel failed',
+        description: error instanceof Error ? error.message : 'Could not cancel generation',
+        variant: 'destructive',
+      });
+    },
+  });
   const addPendingGeneration = useGenerationStore((state) => state.addPendingGeneration);
   const setAudioWithAutoPlay = usePlayerStore((state) => state.setAudioWithAutoPlay);
   const restartCurrentAudio = usePlayerStore((state) => state.restartCurrentAudio);
@@ -157,11 +148,11 @@ export function HistoryTable() {
   const pendingCount = useGenerationStore((state) => state.pendingGenerationIds.size);
   const prevPendingCountRef = useRef(pendingCount);
   useEffect(() => {
-    if (deleteGeneration.isSuccess || importGeneration.isSuccess) {
+    if (deleteGeneration.isSuccess || importGeneration.isSuccess || clearFailed.isSuccess) {
       setPage(0);
       setAllHistory([]);
     }
-  }, [deleteGeneration.isSuccess, importGeneration.isSuccess]);
+  }, [deleteGeneration.isSuccess, importGeneration.isSuccess, clearFailed.isSuccess]);
 
   useEffect(() => {
     // A generation finished (pending count decreased) — scroll back to show it
@@ -415,15 +406,53 @@ export function HistoryTable() {
 
   const history = allHistory;
   const hasMore = allHistory.length < total;
+  const failedCount = history.filter((g) => g.status === 'failed').length;
+
+  const handleClearFailedConfirm = () => {
+    clearFailed.mutate(undefined, {
+      onSuccess: (data) => {
+        setClearFailedDialogOpen(false);
+        toast({
+          title: 'Cleared failed generations',
+          description: `${data.deleted} failed ${data.deleted === 1 ? 'generation' : 'generations'} removed.`,
+        });
+      },
+      onError: (error) => {
+        setClearFailedDialogOpen(false);
+        toast({
+          title: 'Failed to clear',
+          description: error instanceof Error ? error.message : 'Unknown error',
+          variant: 'destructive',
+        });
+      },
+    });
+  };
 
   return (
     <div className="flex flex-col h-full min-h-0 relative">
       {history.length === 0 ? (
         <div className="text-center py-12 px-5 border-2 border-dashed mb-5 border-muted rounded-md text-muted-foreground flex-1 flex items-center justify-center">
-          No voice generations, yet...
+          {t('history.empty')}
         </div>
       ) : (
         <>
+          {failedCount > 0 && (
+            <div className="flex items-center justify-between px-1 pb-2">
+              <span className="text-xs text-muted-foreground">
+                {failedCount} failed {failedCount === 1 ? 'generation' : 'generations'}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs text-muted-foreground"
+                onClick={() => setClearFailedDialogOpen(true)}
+                disabled={clearFailed.isPending}
+              >
+                <Trash2 className="h-3 w-3 mr-1.5" />
+                {clearFailed.isPending ? 'Clearing...' : 'Clear failed'}
+              </Button>
+            </div>
+          )}
           {isScrolled && (
             <div className="absolute top-0 left-0 right-0 h-16 bg-gradient-to-b from-background to-transparent z-10 pointer-events-none" />
           )}
@@ -442,6 +471,8 @@ export function HistoryTable() {
               const isPlayable = !isGenerating && !isFailed;
               const hasVersions = gen.versions && gen.versions.length > 1;
               const isVersionsExpanded = expandedVersionsId === gen.id;
+              const isCancelling =
+                cancelGeneration.isPending && cancelGeneration.variables === gen.id;
               return (
                 <div
                   key={gen.id}
@@ -590,60 +621,72 @@ export function HistoryTable() {
                             <Trash2 className="h-2 w-2" />
                           </Button>
                         </>
+                      ) : isGenerating ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 text-muted-foreground/50 hover:bg-muted-foreground/20 hover:text-muted-foreground"
+                          aria-label="Cancel generation"
+                          disabled={isCancelling}
+                          onClick={() => cancelGeneration.mutate(gen.id)}
+                        >
+                          {isCancelling ? (
+                            <Loader2 className="h-2 w-2 animate-spin" />
+                          ) : (
+                            <Square className="h-2 w-2" />
+                          )}
+                        </Button>
                       ) : (
-                        <>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-6 w-6 text-muted-foreground/50 hover:bg-muted-foreground/20 hover:text-muted-foreground"
-                                aria-label="Actions"
-                                disabled={isGenerating}
-                              >
-                                <MoreHorizontal className="h-2 w-2" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem
-                                onClick={() => handlePlay(gen.id, gen.text, gen.profile_id)}
-                              >
-                                <Play className="mr-2 h-4 w-4" />
-                                Play
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => handleDownloadAudio(gen.id, gen.text)}
-                                disabled={exportGenerationAudio.isPending}
-                              >
-                                <Download className="mr-2 h-4 w-4" />
-                                Export Audio
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => handleExportPackage(gen.id, gen.text)}
-                                disabled={exportGeneration.isPending}
-                              >
-                                <FileArchive className="mr-2 h-4 w-4" />
-                                Export Package
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleApplyEffects(gen.id)}>
-                                <Wand2 className="mr-2 h-4 w-4" />
-                                Apply Effects
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleRegenerate(gen.id)}>
-                                <RotateCcw className="mr-2 h-4 w-4" />
-                                Regenerate
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => handleDeleteClick(gen.id, gen.profile_name)}
-                                disabled={deleteGeneration.isPending}
-                                // className="text-destructive focus:text-destructive"
-                              >
-                                <Trash2 className="mr-2 h-4 w-4" />
-                                Delete
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 text-muted-foreground/50 hover:bg-muted-foreground/20 hover:text-muted-foreground"
+                              aria-label={t('history.actions.menu')}
+                              disabled={isGenerating}
+                            >
+                              <MoreHorizontal className="h-2 w-2" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onClick={() => handlePlay(gen.id, gen.text, gen.profile_id)}
+                            >
+                              <Play className="mr-2 h-4 w-4" />
+                              {t('history.actions.play')}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => handleDownloadAudio(gen.id, gen.text)}
+                              disabled={exportGenerationAudio.isPending}
+                            >
+                              <Download className="mr-2 h-4 w-4" />
+                              {t('history.actions.exportAudio')}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => handleExportPackage(gen.id, gen.text)}
+                              disabled={exportGeneration.isPending}
+                            >
+                              <FileArchive className="mr-2 h-4 w-4" />
+                              {t('history.actions.exportPackage')}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleApplyEffects(gen.id)}>
+                              <Wand2 className="mr-2 h-4 w-4" />
+                              {t('history.actions.applyEffects')}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleRegenerate(gen.id)}>
+                              <RotateCcw className="mr-2 h-4 w-4" />
+                              {t('history.actions.regenerate')}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => handleDeleteClick(gen.id, gen.profile_name)}
+                              disabled={deleteGeneration.isPending}
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              {t('common.delete')}
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       )}
                     </div>
                   </div>
@@ -732,10 +775,9 @@ export function HistoryTable() {
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Generation</DialogTitle>
+            <DialogTitle>{t('history.deleteDialog.title')}</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete this generation from "{generationToDelete?.name}"?
-              This action cannot be undone.
+              {t('history.deleteDialog.body', { name: generationToDelete?.name })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -746,14 +788,39 @@ export function HistoryTable() {
                 setGenerationToDelete(null);
               }}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               variant="destructive"
               onClick={handleDeleteConfirm}
               disabled={deleteGeneration.isPending}
             >
-              {deleteGeneration.isPending ? 'Deleting...' : 'Delete'}
+              {deleteGeneration.isPending ? t('history.deleteDialog.deleting') : t('common.delete')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={clearFailedDialogOpen} onOpenChange={setClearFailedDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('history.clearFailedDialog.title')}</DialogTitle>
+            <DialogDescription>
+              {t('history.clearFailedDialog.body', { count: failedCount })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setClearFailedDialogOpen(false)}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleClearFailedConfirm}
+              disabled={clearFailed.isPending}
+            >
+              {clearFailed.isPending
+                ? t('history.clearFailedDialog.clearing')
+                : t('history.clearFailedDialog.clearAll')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -762,9 +829,9 @@ export function HistoryTable() {
       <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Import Generation</DialogTitle>
+            <DialogTitle>{t('history.importDialog.title')}</DialogTitle>
             <DialogDescription>
-              Import the generation from "{selectedFile?.name}". This will add it to your history.
+              {t('history.importDialog.body', { name: selectedFile?.name })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -778,13 +845,15 @@ export function HistoryTable() {
                 }
               }}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               onClick={handleImportConfirm}
               disabled={importGeneration.isPending || !selectedFile}
             >
-              {importGeneration.isPending ? 'Importing...' : 'Import'}
+              {importGeneration.isPending
+                ? t('history.importDialog.importing')
+                : t('history.importDialog.action')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -793,21 +862,20 @@ export function HistoryTable() {
       <Dialog open={effectsDialogOpen} onOpenChange={setEffectsDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Apply Effects</DialogTitle>
-            <DialogDescription>
-              Configure post-processing effects to apply to this generation. A new version will be
-              created.
-            </DialogDescription>
+            <DialogTitle>{t('history.effectsDialog.title')}</DialogTitle>
+            <DialogDescription>{t('history.effectsDialog.body')}</DialogDescription>
           </DialogHeader>
           {effectsTargetVersions.length > 1 && (
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Source</label>
+              <label className="text-xs font-medium text-muted-foreground">
+                {t('history.effectsDialog.sourceLabel')}
+              </label>
               <Select
                 value={effectsSourceVersionId ?? ''}
                 onValueChange={(val) => setEffectsSourceVersionId(val || null)}
               >
                 <SelectTrigger className="h-8 text-xs">
-                  <SelectValue placeholder="Select source version" />
+                  <SelectValue placeholder={t('history.effectsDialog.sourcePlaceholder')} />
                 </SelectTrigger>
                 <SelectContent>
                   {effectsTargetVersions.map((v) => (
@@ -829,13 +897,15 @@ export function HistoryTable() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEffectsDialogOpen(false)}>
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               onClick={handleApplyEffectsConfirm}
               disabled={applyingEffects || effectsChain.length === 0}
             >
-              {applyingEffects ? 'Applying...' : 'Apply'}
+              {applyingEffects
+                ? t('history.effectsDialog.applying')
+                : t('history.effectsDialog.apply')}
             </Button>
           </DialogFooter>
         </DialogContent>

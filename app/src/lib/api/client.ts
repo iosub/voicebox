@@ -18,7 +18,9 @@ import type {
   ModelDownloadRequest,
   ModelStatusListResponse,
   PresetVoice,
+  PersonalityTextResponse,
   ProfileSampleResponse,
+  RocmStatus,
   StoryCreate,
   StoryDetailResponse,
   StoryItemBatchUpdate,
@@ -29,11 +31,28 @@ import type {
   StoryItemSplit,
   StoryItemTrim,
   StoryItemVersionUpdate,
+  StoryItemVolumeUpdate,
   StoryResponse,
   TranscriptionResponse,
   VoiceProfileCreate,
   VoiceProfileResponse,
   WhisperModelSize,
+  CaptureListResponse,
+  CaptureResponse,
+  CaptureCreateResponse,
+  CaptureReadinessResponse,
+  CaptureRefineRequest,
+  CaptureRetranscribeRequest,
+  CaptureSettings,
+  CaptureSettingsUpdate,
+  CaptureSource,
+  GenerationSettings,
+  GenerationSettingsUpdate,
+  MCPClientBinding,
+  MCPClientBindingListResponse,
+  MCPClientBindingUpsert,
+  CloudLoginStartResponse,
+  CloudStatus,
 } from './types';
 
 function formatErrorDetail(detail: unknown, fallback: string): string {
@@ -112,6 +131,17 @@ class ApiClient {
   async deleteProfile(profileId: string): Promise<void> {
     await this.request<void>(`/profiles/${profileId}`, {
       method: 'DELETE',
+    });
+  }
+
+  // ── Personality-driven text generation ─────────────────────────────
+  // Compose produces a fresh in-character utterance the UI drops into
+  // the generate textarea. Rewrite now happens server-side inside
+  // `/generate` when `personality: true` is passed in the request body.
+
+  async composeWithPersonality(profileId: string): Promise<PersonalityTextResponse> {
+    return this.request<PersonalityTextResponse>(`/profiles/${profileId}/compose`, {
+      method: 'POST',
     });
   }
 
@@ -234,10 +264,30 @@ class ApiClient {
     });
   }
 
+  async cancelGeneration(generationId: string): Promise<{ message: string }> {
+    return this.request<{ message: string }>(`/generate/${generationId}/cancel`, {
+      method: 'POST',
+    });
+  }
+
   async regenerateGeneration(generationId: string): Promise<GenerationResponse> {
     return this.request<GenerationResponse>(`/generate/${generationId}/regenerate`, {
       method: 'POST',
     });
+  }
+
+  async importAudio(file: File): Promise<GenerationResponse> {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${this.getBaseUrl()}/generate/import`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => res.statusText);
+      throw new Error(detail || `HTTP ${res.status}`);
+    }
+    return res.json();
   }
 
   async toggleFavorite(generationId: string): Promise<{ is_favorited: boolean }> {
@@ -266,6 +316,12 @@ class ApiClient {
 
   async deleteGeneration(generationId: string): Promise<void> {
     await this.request<void>(`/history/${generationId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async clearFailedGenerations(): Promise<{ deleted: number }> {
+    return this.request<{ deleted: number }>(`/history/failed`, {
       method: 'DELETE',
     });
   }
@@ -369,6 +425,122 @@ class ApiClient {
     return response.json();
   }
 
+  // Captures
+  async listCaptures(limit = 50, offset = 0): Promise<CaptureListResponse> {
+    return this.request<CaptureListResponse>(
+      `/captures?limit=${limit}&offset=${offset}`,
+    );
+  }
+
+  async getCapture(captureId: string): Promise<CaptureResponse> {
+    return this.request<CaptureResponse>(`/captures/${captureId}`);
+  }
+
+  async createCapture(
+    file: File,
+    options?: {
+      source?: CaptureSource;
+      language?: LanguageCode;
+      sttModel?: WhisperModelSize;
+    },
+  ): Promise<CaptureCreateResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('source', options?.source ?? 'file');
+    if (options?.language) formData.append('language', options.language);
+    if (options?.sttModel) formData.append('stt_model', options.sttModel);
+
+    const url = `${this.getBaseUrl()}/captures`;
+    const response = await fetch(url, { method: 'POST', body: formData });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({
+        detail: response.statusText,
+      }));
+      throw new Error(formatErrorDetail(error.detail, `HTTP error! status: ${response.status}`));
+    }
+    return response.json();
+  }
+
+  async deleteCapture(captureId: string): Promise<{ message: string }> {
+    return this.request<{ message: string }>(`/captures/${captureId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async refineCapture(
+    captureId: string,
+    body: CaptureRefineRequest,
+  ): Promise<CaptureResponse> {
+    return this.request<CaptureResponse>(`/captures/${captureId}/refine`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  async retranscribeCapture(
+    captureId: string,
+    body: CaptureRetranscribeRequest,
+  ): Promise<CaptureResponse> {
+    return this.request<CaptureResponse>(`/captures/${captureId}/retranscribe`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  getCaptureAudioUrl(captureId: string): string {
+    return `${this.getBaseUrl()}/captures/${captureId}/audio`;
+  }
+
+  // Settings
+  async getCaptureSettings(): Promise<CaptureSettings> {
+    return this.request<CaptureSettings>('/settings/captures');
+  }
+
+  async getCaptureReadiness(): Promise<CaptureReadinessResponse> {
+    return this.request<CaptureReadinessResponse>('/capture/readiness');
+  }
+
+  async updateCaptureSettings(patch: CaptureSettingsUpdate): Promise<CaptureSettings> {
+    return this.request<CaptureSettings>('/settings/captures', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    });
+  }
+
+  async getGenerationSettings(): Promise<GenerationSettings> {
+    return this.request<GenerationSettings>('/settings/generation');
+  }
+
+  async updateGenerationSettings(
+    patch: GenerationSettingsUpdate,
+  ): Promise<GenerationSettings> {
+    return this.request<GenerationSettings>('/settings/generation', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    });
+  }
+
+  // MCP bindings — per-MCP-client voice/engine/personality mapping.
+  async listMCPBindings(): Promise<MCPClientBindingListResponse> {
+    return this.request<MCPClientBindingListResponse>('/mcp/bindings');
+  }
+
+  async upsertMCPBinding(
+    data: MCPClientBindingUpsert,
+  ): Promise<MCPClientBinding> {
+    return this.request<MCPClientBinding>('/mcp/bindings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteMCPBinding(clientId: string): Promise<{ deleted: string }> {
+    return this.request<{ deleted: string }>(
+      `/mcp/bindings/${encodeURIComponent(clientId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
   // Model Management
   async getModelStatus(): Promise<ModelStatusListResponse> {
     return this.request<ModelStatusListResponse>('/models/status');
@@ -378,7 +550,9 @@ class ApiClient {
     return this.request<{ path: string }>('/models/cache-dir');
   }
 
-  async migrateModels(destination: string): Promise<{ source: string; destination: string }> {
+  async migrateModels(
+    destination: string,
+  ): Promise<{ source: string; destination: string; moved: number; errors: string[] }> {
     return this.request('/models/migrate', {
       method: 'POST',
       body: JSON.stringify({ destination }),
@@ -522,6 +696,23 @@ class ApiClient {
     });
   }
 
+  // ROCm Backend Management
+  async getRocmStatus(): Promise<RocmStatus> {
+    return this.request<RocmStatus>('/backend/rocm-status');
+  }
+
+  async downloadRocmBackend(): Promise<{ message: string; progress_key: string }> {
+    return this.request<{ message: string; progress_key: string }>('/backend/download-rocm', {
+      method: 'POST',
+    });
+  }
+
+  async deleteRocmBackend(): Promise<{ message: string }> {
+    return this.request<{ message: string }>('/backend/rocm', {
+      method: 'DELETE',
+    });
+  }
+
   // Stories
   async listStories(): Promise<StoryResponse[]> {
     return this.request<StoryResponse[]>('/stories');
@@ -595,6 +786,17 @@ class ApiClient {
     data: StoryItemTrim,
   ): Promise<StoryItemDetail> {
     return this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/trim`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateStoryItemVolume(
+    storyId: string,
+    itemId: string,
+    data: StoryItemVolumeUpdate,
+  ): Promise<StoryItemDetail> {
+    return this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/volume`, {
       method: 'PUT',
       body: JSON.stringify(data),
     });
@@ -737,6 +939,21 @@ class ApiClient {
     }
 
     return response.blob();
+  }
+
+  // Cloud (backup & sync) — browser-based device login. startCloudLogin opens
+  // the system browser server-side; the UI then polls getCloudStatus until the
+  // backend completes the exchange and the link goes live.
+  async getCloudStatus(): Promise<CloudStatus> {
+    return this.request<CloudStatus>('/cloud/status');
+  }
+
+  async startCloudLogin(): Promise<CloudLoginStartResponse> {
+    return this.request<CloudLoginStartResponse>('/cloud/login/start', { method: 'POST' });
+  }
+
+  async disconnectCloud(): Promise<CloudStatus> {
+    return this.request<CloudStatus>('/cloud/disconnect', { method: 'POST' });
   }
 }
 

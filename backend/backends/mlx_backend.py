@@ -20,7 +20,6 @@ ensure_original_qwen_config_cached()
 from . import TTSBackend, STTBackend, LANGUAGE_CODE_TO_NAME, WHISPER_HF_REPOS
 from .base import is_model_cached, combine_voice_prompts as _combine_voice_prompts, model_load_progress
 from ..utils.cache import get_cache_key, get_cached_voice_prompt, cache_voice_prompt
-from ..utils.hf_offline_patch import force_offline_if_cached
 
 
 class MLXTTSBackend:
@@ -45,11 +44,9 @@ class MLXTTSBackend:
         Returns:
             HuggingFace Hub model ID for MLX
         """
-        # MLX model mapping
         mlx_model_map = {
             "1.7B": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
-            # 0.6B not yet converted to MLX format
-            "0.6B": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",  # Fallback to 1.7B
+            "0.6B": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
         }
 
         if model_size not in mlx_model_map:
@@ -101,8 +98,7 @@ class MLXTTSBackend:
 
             logger.info("Loading MLX TTS model %s...", model_size)
 
-            with force_offline_if_cached(is_cached, model_name):
-                self.model = load(model_path)
+            self.model = load(model_path)
 
         self._current_model_size = model_size
         self.model_size = model_size
@@ -220,10 +216,12 @@ class MLXTTSBackend:
                 logger.warning("Regenerating without voice prompt.")
                 ref_audio = None
 
-            # Check if model supports voice cloning via generate method
-            # MLX API may support ref_audio parameter directly
+            # Inference runs with the process's default HF_HUB_OFFLINE
+            # state. Forcing offline here (previously used to avoid lazy
+            # mlx_audio lookups hanging when the network drops mid-inference,
+            # issue #462) regressed online users because libraries make
+            # legitimate metadata calls during generation.
             try:
-                # Try with voice cloning parameters if supported
                 if ref_audio:
                     # Check if generate accepts ref_audio parameter
                     import inspect
@@ -311,8 +309,7 @@ class MLXSTTBackend:
             model_name = WHISPER_HF_REPOS.get(model_size, f"openai/whisper-{model_size}")
             logger.info("Loading MLX Whisper model %s...", model_size)
 
-            with force_offline_if_cached(is_cached, progress_model_name):
-                self.model = load(model_name)
+            self.model = load(model_name)
 
         self.model_size = model_size
         logger.info("MLX Whisper model %s loaded successfully", model_size)
@@ -351,6 +348,9 @@ class MLXSTTBackend:
             if language:
                 decode_options["language"] = language
 
+            # Inference runs with the process's default HF_HUB_OFFLINE
+            # state — see the comment in MLXTTSBackend.generate for the
+            # regression this revert fixes (issue #462).
             result = self.model.generate(str(audio_path), **decode_options)
 
             # Extract text from result
